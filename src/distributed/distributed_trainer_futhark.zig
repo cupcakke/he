@@ -25,6 +25,8 @@ const ZRuntime = core_relational.ZRuntime;
 const RelationalGraphProcessingUnit = core_relational.RelationalGraphProcessingUnit;
 const FNDSManager = core_relational.FNDSManager;
 const VPU = core_relational.VPU;
+const PatternLocation = core_relational.PatternLocation;
+const Tensor = @import("../core/tensor.zig").Tensor;
 const sfd = @import("../optimizer/sfd.zig");
 
 pub const TrainerConfig = struct {
@@ -32,6 +34,12 @@ pub const TrainerConfig = struct {
     momentum: f32 = 0.0,
     max_line_size: usize = 10 * 1024 * 1024,
     checkpoint_version: u32 = 7,
+};
+
+pub const TrainerComponents = struct {
+    tokenizer: MGT,
+    signal_engine: SignalPropagationEngine,
+    embedding_accel: ?EmbeddingAccelerator,
 };
 
 pub const DistributedTrainerFuthark = struct {
@@ -55,7 +63,7 @@ pub const DistributedTrainerFuthark = struct {
     esso: EntangledStochasticSymmetryOptimizer,
     surprise_memory: SurpriseMemoryManager,
     temporal_graph: TemporalGraph,
-    signal_engine: ?SignalPropagationEngine,
+    signal_engine: SignalPropagationEngine,
     z_runtime: *ZRuntime,
     r_gpu: ?RelationalGraphProcessingUnit,
     fnds_manager: FNDSManager,
@@ -78,6 +86,46 @@ pub const DistributedTrainerFuthark = struct {
         local_batch_size: usize,
         config: TrainerConfig,
     ) !DistributedTrainerFuthark {
+        const vocab = &[_][]const u8{
+            "a",     "about",   "all",   "also",   "and",   "as",    "at",
+            "be",    "because", "but",   "by",     "can",   "come",  "could",
+            "day",   "do",      "even",  "find",   "first", "for",   "from",
+            "get",   "give",    "go",    "have",   "he",    "her",   "here",
+            "him",   "his",     "how",   "i",      "if",    "in",    "into",
+            "it",    "its",     "just",  "know",   "like",  "look",  "make",
+            "man",   "many",    "me",    "more",   "my",    "new",   "no",
+            "not",   "now",     "of",    "on",     "one",   "only",  "or",
+            "other", "our",     "out",   "people", "say",   "see",   "she",
+            "so",    "some",    "take",  "tell",   "than",  "that",  "the",
+            "their", "them",    "then",  "there",  "these", "they",  "thing",
+            "think", "this",    "those", "time",   "to",    "two",   "up",
+            "use",   "very",    "want",  "way",    "we",    "well",  "what",
+            "when",  "which",   "who",   "will",   "with",  "would", "year",
+            "you",   "your",
+        };
+        const empty_anchors: []const []const u8 = &.{};
+
+        var tokenizer = try MGT.init(allocator, vocab, empty_anchors, 50000, .english);
+        errdefer tokenizer.deinit();
+
+        const components = TrainerComponents{
+            .tokenizer = tokenizer,
+            .signal_engine = SignalPropagationEngine.init(allocator, undefined, undefined),
+            .embedding_accel = null,
+        };
+
+        return initWithComponents(allocator, coordinator, model_dim, num_layers, local_batch_size, config, components);
+    }
+
+    pub fn initWithComponents(
+        allocator: std.mem.Allocator,
+        coordinator: *GPUCoordinator,
+        model_dim: usize,
+        num_layers: usize,
+        local_batch_size: usize,
+        config: TrainerConfig,
+        components: TrainerComponents,
+    ) !DistributedTrainerFuthark {
         if (model_dim == 0) return error.InvalidModelDim;
         if (model_dim % 2 != 0) return error.InvalidModelDim;
         if (num_layers == 0) return error.InvalidNumLayers;
@@ -88,26 +136,7 @@ pub const DistributedTrainerFuthark = struct {
         if (config.checkpoint_version == 0) return error.InvalidCheckpointVersion;
         try validateHyperparameters(config.learning_rate, config.momentum);
 
-        const vocab = &[_][]const u8{
-            "a",     "about",   "all",   "also",  "and",   "as",    "at",
-            "be",    "because", "but",   "by",    "can",   "come",  "could",
-            "day",   "do",      "even",  "find",  "first", "for",   "from",
-            "get",   "give",    "go",    "have",  "he",    "her",   "here",
-            "him",   "his",     "how",   "i",     "if",    "in",    "into",
-            "it",    "its",     "just",  "know",  "like",  "look",  "make",
-            "man",   "many",    "me",    "more",  "my",    "new",   "no",
-            "not",   "now",     "of",    "on",    "one",   "only",  "or",
-            "other", "our",     "out",   "people", "say",  "see",   "she",
-            "so",    "some",    "take",  "tell",  "than",  "that",  "the",
-            "their", "them",    "then",  "there", "these", "they",  "thing",
-            "think", "this",    "those", "time",  "to",    "two",   "up",
-            "use",   "very",    "want",  "way",   "we",    "well",  "what",
-            "when",  "which",   "who",   "will",  "with",  "would", "year",
-            "you",   "your",
-        };
-        const empty_anchors: []const []const u8 = &.{};
-
-        var tokenizer = try MGT.init(allocator, vocab, empty_anchors, 50000, .english);
+        var tokenizer = components.tokenizer;
         errdefer tokenizer.deinit();
 
         std.debug.print("tokenizer.next_token_id = {d}\n", .{tokenizer.next_token_id});
@@ -123,7 +152,13 @@ pub const DistributedTrainerFuthark = struct {
         var embedding = try LearnedEmbedding.init(allocator, 50000, actual_model_dim, 42);
         errdefer embedding.deinit();
 
-        const embedding_accel: ?EmbeddingAccelerator = null;
+        var embedding_accel: ?EmbeddingAccelerator = if (components.embedding_accel) |ea| ea else blk: {
+            const ea = EmbeddingAccelerator.init(&accelerator.ctx, tokenizer.next_token_id, actual_model_dim, 42) catch {
+                break :blk null;
+            };
+            break :blk ea;
+        };
+        errdefer if (embedding_accel) |*ea| ea.deinit();
 
         var crev_kernel = try allocator.create(ChaosCoreKernel);
         crev_kernel.* = ChaosCoreKernel.init(allocator);
@@ -138,27 +173,28 @@ pub const DistributedTrainerFuthark = struct {
         var nsir_graph = try SelfSimilarRelationalGraph.init(allocator);
         errdefer nsir_graph.deinit();
 
-        const esso = EntangledStochasticSymmetryOptimizer.init(allocator, 1.0, 0.995, 1000);
+        var esso = EntangledStochasticSymmetryOptimizer.init(allocator, 1.0, 0.995, 1000);
         errdefer esso.deinit();
 
-        const surprise_memory = SurpriseMemoryManager.init(
+        var surprise_memory = SurpriseMemoryManager.init(
             allocator,
             &crev_kernel.storage,
             &crev_kernel.flow_analyzer,
         );
         errdefer surprise_memory.deinit();
 
-        const temporal_graph_inst = TemporalGraph.init(allocator);
+        var temporal_graph_inst = TemporalGraph.init(allocator);
         errdefer temporal_graph_inst.deinit();
-
-        const signal_engine_null: ?SignalPropagationEngine = null;
 
         var z_runtime = try ZRuntime.init(allocator);
         errdefer z_runtime.deinit();
 
         const r_gpu_inst = RelationalGraphProcessingUnit.init(allocator, 4, 4) catch null;
         errdefer {
-            if (r_gpu_inst) |*rg| rg.deinit();
+            if (r_gpu_inst) |*rg| {
+                var rg_mut = rg.*;
+                rg_mut.deinit();
+            }
         }
 
         var fnds_manager_inst = try FNDSManager.init(allocator);
@@ -167,7 +203,11 @@ pub const DistributedTrainerFuthark = struct {
         var vpu_inst = try VPU.init(allocator);
         errdefer vpu_inst.deinit();
 
-        return DistributedTrainerFuthark{
+        var provisional = components.signal_engine;
+        provisional.deinit();
+        const signal_engine_rebound = SignalPropagationEngine.init(allocator, &nsir_graph, &crev_kernel.flow_analyzer);
+
+        var trainer = DistributedTrainerFuthark{
             .allocator = allocator,
             .coordinator = coordinator,
             .tokenizer = tokenizer,
@@ -188,15 +228,18 @@ pub const DistributedTrainerFuthark = struct {
             .esso = esso,
             .surprise_memory = surprise_memory,
             .temporal_graph = temporal_graph_inst,
-            .signal_engine = signal_engine_null,
+            .signal_engine = signal_engine_rebound,
             .z_runtime = z_runtime,
             .r_gpu = r_gpu_inst,
             .fnds_manager = fnds_manager_inst,
             .vpu = vpu_inst,
         };
+        trainer.signal_engine = SignalPropagationEngine.init(allocator, &trainer.nsir_graph, &trainer.crev_kernel.?.flow_analyzer);
+        return trainer;
     }
 
-    pub fn postInit(self: *DistributedTrainerFuthark) void {
+    pub fn rebindSignalEngine(self: *DistributedTrainerFuthark) void {
+        self.signal_engine.deinit();
         self.signal_engine = SignalPropagationEngine.init(
             self.allocator,
             &self.nsir_graph,
@@ -210,7 +253,7 @@ pub const DistributedTrainerFuthark = struct {
         self.fnds_manager.deinit();
         if (self.r_gpu) |*rg| rg.deinit();
         self.z_runtime.deinit();
-        if (self.signal_engine) |*se| se.deinit();
+        self.signal_engine.deinit();
         self.temporal_graph.deinit();
         self.surprise_memory.deinit();
         self.esso.deinit();
@@ -601,6 +644,73 @@ pub const DistributedTrainerFuthark = struct {
 
         _ = self.nsir_graph.encodeInformation(tensor_bytes) catch {};
 
+        {
+            var graph_embeddings_opt = self.vpu.computeGraphEmbeddings(&self.nsir_graph) catch null;
+            if (graph_embeddings_opt) |*embs| {
+                defer embs.deinit();
+                if (embs.items.len > 0) {
+                    const hash = self.nsir_graph.topology_hash;
+                    const theta: f64 = @as(f64, @floatFromInt(hash[0])) / 255.0 * std.math.pi;
+                    const phi: f64 = @as(f64, @floatFromInt(hash[1])) / 255.0 * std.math.pi;
+                    self.vpu.quantumVectorOps(embs.items, theta, phi);
+                    if (embs.items.len >= 2) {
+                        var sim_matrix_opt = self.vpu.computeSimilarityMatrix(embs.items) catch null;
+                        if (sim_matrix_opt) |*sm| {
+                            defer {
+                                for (sm.items) |*row| row.deinit();
+                                sm.deinit();
+                            }
+                            if (sm.items.len > 0 and sm.items[0].items.len > 0) {
+                                const coherence = sm.items[0].items[0];
+                                if (std.math.isFinite(coherence) and coherence > 0.0) {
+                                    const lr_f64: f64 = @floatCast(self.learning_rate);
+                                    const adjusted: f64 = lr_f64 * (1.0 + coherence * 0.001);
+                                    var new_lr: f32 = @floatCast(adjusted);
+                                    if (new_lr > 0.1) new_lr = 0.1;
+                                    if (std.math.isFinite(new_lr)) self.learning_rate = new_lr;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        {
+            const tree_id_opt = self.fnds_manager.createTree(6, 4) catch null;
+            if (tree_id_opt) |tid| {
+                for (token_lists_items, 0..) |token_list, sample_idx| {
+                    var node_id_buf: [64]u8 = undefined;
+                    const node_id = std.fmt.bufPrint(&node_id_buf, "step_{d}_sample_{d}", .{ self.global_step, sample_idx }) catch continue;
+                    const token_bytes = std.mem.sliceAsBytes(token_list.items);
+                    _ = self.fnds_manager.insertIntoTree(tid, node_id, token_bytes, 0) catch {};
+                }
+                const index_id_buf_opt = std.fmt.allocPrint(self.allocator, "tokens_step_{d}", .{self.global_step}) catch null;
+                if (index_id_buf_opt) |idx_id| {
+                    defer self.allocator.free(idx_id);
+                    self.fnds_manager.createIndex(idx_id) catch {};
+                    for (token_lists_items) |token_list| {
+                        if (token_list.items.len == 0) continue;
+                        const pattern_len = @min(token_list.items.len, 8);
+                        const pattern_bytes = std.mem.sliceAsBytes(token_list.items[0..pattern_len]);
+                        var loc = PatternLocation.init(
+                            self.allocator,
+                            tid,
+                            0,
+                            "root",
+                            0,
+                            pattern_bytes.len,
+                            1.0,
+                        ) catch continue;
+                        var loc_added = false;
+                        defer if (!loc_added) loc.deinit();
+                        self.fnds_manager.addPatternToIndex(idx_id, pattern_bytes, loc) catch continue;
+                        loc_added = true;
+                    }
+                }
+            }
+        }
+
         if (self.r_gpu) |*rg| {
             rg.distributeGraph(&self.nsir_graph) catch {};
         }
@@ -637,9 +747,7 @@ pub const DistributedTrainerFuthark = struct {
             self.temporal_graph.advanceTime(after_ns - now_ns);
         }
 
-        if (self.signal_engine) |*se| {
-            se.propagateStep() catch {};
-        }
+        self.signal_engine.propagateStep() catch {};
 
         {
             var name_buf: [64]u8 = undefined;
@@ -1202,7 +1310,7 @@ pub const DistributedTrainerFuthark = struct {
             }
         }
 
-        if (self.signal_engine) |*se| se.deinit();
+        self.signal_engine.deinit();
         self.signal_engine = SignalPropagationEngine.init(
             self.allocator,
             &self.nsir_graph,
@@ -1371,13 +1479,21 @@ pub const DistributedTrainerFuthark = struct {
                     }
                 }
 
-                var gfc = sfd.GradientFlowController.init(self.allocator, grad_data.len, 1.0, 0.1) catch {
-                    emb.backward(list, grad_data, max_seq_len);
-                    emb.applyGradients(self.learning_rate, self.momentum);
-                    continue;
-                };
-                defer gfc.deinit();
-                gfc.clipAndNormalize(grad_data) catch {};
+                const gfc = sfd.GradientFlowController.initWithConfig(.{
+                    .gradient_clip_norm = 1.0,
+                    .use_normalized_gradient_flow = true,
+                    .spectral_power_iterations = 5,
+                });
+
+                if (gfc.use_normalized_gradient_flow) {
+                    var norm_sq: f32 = 0.0;
+                    for (grad_data) |g| norm_sq += g * g;
+                    const norm = @sqrt(norm_sq);
+                    if (std.math.isFinite(norm) and norm > gfc.gradient_clip_norm and norm > 1e-12) {
+                        const scale = gfc.gradient_clip_norm / norm;
+                        for (grad_data) |*g| g.* *= scale;
+                    }
+                }
 
                 emb.backward(list, grad_data, max_seq_len);
                 emb.applyGradients(self.learning_rate, self.momentum);
@@ -1401,5 +1517,17 @@ pub const DistributedTrainerFuthark = struct {
         }
         const text_bytes = std.mem.sliceAsBytes(text);
         _ = self.nsir_graph.encodeInformation(text_bytes) catch {};
+
+        {
+            const tree_id_opt = self.fnds_manager.createTree(4, 3) catch null;
+            if (tree_id_opt) |tid| {
+                var hasher = std.hash.Wyhash.init(0);
+                hasher.update(text);
+                const text_hash = hasher.final();
+                var node_id_buf: [32]u8 = undefined;
+                const node_id = std.fmt.bufPrint(&node_id_buf, "kg_{x}", .{text_hash}) catch "kg_node";
+                _ = self.fnds_manager.insertIntoTree(tid, node_id, text_bytes, 0) catch {};
+            }
+        }
     }
 };
