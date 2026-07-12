@@ -22,13 +22,13 @@ pub fn build(b: *std.Build) void {
     const futhark_cpu_step = b.addSystemCommand(&.{
         "futhark", "c", "--library",
         "src/hw/accel/futhark_kernels.fut",
-        "-o", "src/hw/accel/futhark_kernels",
+        "-o",      "src/hw/accel/futhark_kernels",
     });
 
     const futhark_gpu_step = b.addSystemCommand(&.{
         "futhark", "opencl", "--library",
         "src/hw/accel/main.fut",
-        "-o", "src/hw/accel/main_gpu",
+        "-o",      "src/hw/accel/main_gpu",
     });
 
     const core_relational_mod = b.createModule(.{
@@ -80,159 +80,46 @@ pub fn build(b: *std.Build) void {
         distributed_futhark_step.dependOn(&distributed_futhark_install.step);
     }
 
-    const tensor_tests = b.addTest(.{
-        .root_source_file = b.path("src/core/tensor.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_tensor_tests = b.addRunArtifact(tensor_tests);
-    const tensor_test_step = b.step("test-tensor", "Run tensor tests");
-    tensor_test_step.dependOn(&run_tensor_tests.step);
+    const TestSpec = struct {
+        step: []const u8,
+        wrapper: []const u8,
+        desc: []const u8,
+    };
 
-    const memory_tests = b.addTest(.{
-        .root_source_file = b.path("src/core/memory.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_memory_tests = b.addRunArtifact(memory_tests);
-    const memory_test_step = b.step("test-memory", "Run memory tests");
-    memory_test_step.dependOn(&run_memory_tests.step);
+    const test_specs = [_]TestSpec{
+        .{ .step = "test-tensor", .wrapper = "src/test_root_tensor.zig", .desc = "Run tensor tests" },
+        .{ .step = "test-memory", .wrapper = "src/test_root_memory.zig", .desc = "Run memory tests" },
+        .{ .step = "test-embedding", .wrapper = "src/test_root_embedding.zig", .desc = "Run embedding tests" },
+        .{ .step = "test-rsf", .wrapper = "src/test_root_rsf.zig", .desc = "Run RSF tests" },
+        .{ .step = "test-oftb", .wrapper = "src/test_root_oftb.zig", .desc = "Run OFTB tests" },
+        .{ .step = "test-nsir", .wrapper = "src/test_root_nsir.zig", .desc = "Run NSIR graph tests" },
+        .{ .step = "test-reasoning", .wrapper = "src/test_root_reasoning.zig", .desc = "Run reasoning orchestrator tests" },
+        .{ .step = "test-crev", .wrapper = "src/test_root_crev.zig", .desc = "Run CREV pipeline tests" },
+        .{ .step = "test-surprise", .wrapper = "src/test_root_surprise.zig", .desc = "Run surprise memory tests" },
+        .{ .step = "test-temporal", .wrapper = "src/test_root_temporal.zig", .desc = "Run temporal graph tests" },
+        .{ .step = "test-vpu", .wrapper = "src/test_root_vpu.zig", .desc = "Run VPU tests" },
+        .{ .step = "test-fnds", .wrapper = "src/test_root_fnds.zig", .desc = "Run FNDS tests" },
+        .{ .step = "test-formal", .wrapper = "src/test_root_formal.zig", .desc = "Run formal verification tests" },
+        .{ .step = "test-security", .wrapper = "src/test_root_security.zig", .desc = "Run security proofs tests" },
+        .{ .step = "test-quantum-adapter", .wrapper = "src/test_root_quantum_adapter.zig", .desc = "Run quantum task adapter tests" },
+        .{ .step = "test-signal", .wrapper = "src/test_root_signal.zig", .desc = "Run signal propagation tests" },
+        .{ .step = "stress-refcount", .wrapper = "src/test_root_stress_refcount.zig", .desc = "Run tensor refcount stress test" },
+    };
 
-    const rsf_tests = b.addTest(.{
-        .root_source_file = b.path("src/processor/rsf.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_rsf_tests = b.addRunArtifact(rsf_tests);
-    const rsf_test_step = b.step("test-rsf", "Run RSF tests");
-    rsf_test_step.dependOn(&run_rsf_tests.step);
+    const test_all_step = b.step("test-all", "Run all tests");
 
-    const oftb_tests = b.addTest(.{
-        .root_source_file = b.path("src/processor/oftb.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_oftb_tests = b.addRunArtifact(oftb_tests);
-    const oftb_test_step = b.step("test-oftb", "Run OFTB tests");
-    oftb_test_step.dependOn(&run_oftb_tests.step);
-
-    const embedding_tests = b.addTest(.{
-        .root_source_file = b.path("src/core/learned_embedding.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_embedding_tests = b.addRunArtifact(embedding_tests);
-    const embedding_test_step = b.step("test-embedding", "Run embedding tests");
-    embedding_test_step.dependOn(&run_embedding_tests.step);
-
-    const nsir_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/nsir_core.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_nsir_tests = b.addRunArtifact(nsir_tests);
-    const nsir_test_step = b.step("test-nsir", "Run NSIR graph tests");
-    nsir_test_step.dependOn(&run_nsir_tests.step);
-
-    const reasoning_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/reasoning_orchestrator.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_reasoning_tests = b.addRunArtifact(reasoning_tests);
-    const reasoning_test_step = b.step("test-reasoning", "Run reasoning orchestrator tests");
-    reasoning_test_step.dependOn(&run_reasoning_tests.step);
-
-    const crev_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/crev_pipeline.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_crev_tests = b.addRunArtifact(crev_tests);
-    const crev_test_step = b.step("test-crev", "Run CREV pipeline tests");
-    crev_test_step.dependOn(&run_crev_tests.step);
-
-    const surprise_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/surprise_memory.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_surprise_tests = b.addRunArtifact(surprise_tests);
-    const surprise_test_step = b.step("test-surprise", "Run surprise memory tests");
-    surprise_test_step.dependOn(&run_surprise_tests.step);
-
-    const temporal_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/temporal_graph.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_temporal_tests = b.addRunArtifact(temporal_tests);
-    const temporal_test_step = b.step("test-temporal", "Run temporal graph tests");
-    temporal_test_step.dependOn(&run_temporal_tests.step);
-
-    const vpu_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/vpu.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_vpu_tests = b.addRunArtifact(vpu_tests);
-    const vpu_test_step = b.step("test-vpu", "Run VPU tests");
-    vpu_test_step.dependOn(&run_vpu_tests.step);
-
-    const fnds_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/fnds.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_fnds_tests = b.addRunArtifact(fnds_tests);
-    const fnds_test_step = b.step("test-fnds", "Run FNDS tests");
-    fnds_test_step.dependOn(&run_fnds_tests.step);
-
-    const formal_verification_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/formal_verification.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_formal_verification_tests = b.addRunArtifact(formal_verification_tests);
-    const formal_verification_test_step = b.step("test-formal", "Run formal verification tests");
-    formal_verification_test_step.dependOn(&run_formal_verification_tests.step);
-
-    const security_proofs_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/security_proofs.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_security_proofs_tests = b.addRunArtifact(security_proofs_tests);
-    const security_proofs_test_step = b.step("test-security", "Run security proofs tests");
-    security_proofs_test_step.dependOn(&run_security_proofs_tests.step);
-
-    const quantum_task_adapter_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/quantum_task_adapter.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_quantum_task_adapter_tests = b.addRunArtifact(quantum_task_adapter_tests);
-    const quantum_task_adapter_test_step = b.step("test-quantum-adapter", "Run quantum task adapter tests");
-    quantum_task_adapter_test_step.dependOn(&run_quantum_task_adapter_tests.step);
-
-    const signal_propagation_tests = b.addTest(.{
-        .root_source_file = b.path("src/core_relational/signal_propagation.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const run_signal_propagation_tests = b.addRunArtifact(signal_propagation_tests);
-    const signal_propagation_test_step = b.step("test-signal", "Run signal propagation tests");
-    signal_propagation_test_step.dependOn(&run_signal_propagation_tests.step);
-
-    const stress_test = b.addTest(.{
-        .name = "stress-refcount",
-        .root_source_file = b.path("src/tests/stress_tensor_refcount.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const stress_run = b.addRunArtifact(stress_test);
-    const stress_step = b.step("stress-refcount", "Run tensor refcount stress test");
-    stress_step.dependOn(&stress_run.step);
+    inline for (test_specs) |spec| {
+        const t = b.addTest(.{
+            .root_source_file = b.path(spec.wrapper),
+            .target = target,
+            .optimize = optimize,
+        });
+        t.root_module.addOptions("build_options", build_options);
+        const run = b.addRunArtifact(t);
+        const step = b.step(spec.step, spec.desc);
+        step.dependOn(&run.step);
+        test_all_step.dependOn(&run.step);
+    }
 
     const c_api_test = b.addExecutable(.{
         .name = "jaide-c-api-test",
@@ -246,40 +133,24 @@ pub fn build(b: *std.Build) void {
     const c_api_test_run = b.addRunArtifact(c_api_test);
     const c_api_test_step = b.step("test-c-api", "Run C API test");
     c_api_test_step.dependOn(&c_api_test_run.step);
-
-    const test_all_step = b.step("test-all", "Run all tests");
-    test_all_step.dependOn(&run_tensor_tests.step);
-    test_all_step.dependOn(&run_memory_tests.step);
-    test_all_step.dependOn(&run_rsf_tests.step);
-    test_all_step.dependOn(&run_oftb_tests.step);
-    test_all_step.dependOn(&run_embedding_tests.step);
-    test_all_step.dependOn(&run_nsir_tests.step);
-    test_all_step.dependOn(&run_reasoning_tests.step);
-    test_all_step.dependOn(&run_crev_tests.step);
-    test_all_step.dependOn(&run_surprise_tests.step);
-    test_all_step.dependOn(&run_temporal_tests.step);
-    test_all_step.dependOn(&run_vpu_tests.step);
-    test_all_step.dependOn(&run_fnds_tests.step);
-    test_all_step.dependOn(&run_formal_verification_tests.step);
-    test_all_step.dependOn(&run_security_proofs_tests.step);
-    test_all_step.dependOn(&run_quantum_task_adapter_tests.step);
-    test_all_step.dependOn(&run_signal_propagation_tests.step);
-    test_all_step.dependOn(&stress_run.step);
     test_all_step.dependOn(&c_api_test_run.step);
 
     if (zk_enabled) {
         const circom_step = b.addSystemCommand(&.{
-            "circom", "src/zk/inference_trace.circom",
-            "--r1cs", "--wasm", "--sym", "-o", "src/zk/",
+            "circom",   "src/zk/inference_trace.circom",
+            "--r1cs",   "--wasm",
+            "--sym",    "-o",
+            "src/zk/",
         });
         const snarkjs_setup = b.addSystemCommand(&.{
-            "snarkjs", "groth16", "setup",
-            "src/zk/inference_trace.r1cs", "pot12_final.ptau",
-            "src/zk/inference_trace.zkey",
+            "snarkjs",                        "groth16",
+            "setup",                          "src/zk/inference_trace.r1cs",
+            "pot12_final.ptau",               "src/zk/inference_trace.zkey",
         });
         snarkjs_setup.step.dependOn(&circom_step.step);
         const snarkjs_vkey = b.addSystemCommand(&.{
-            "snarkjs", "zkey", "export", "verificationkey",
+            "snarkjs",              "zkey",
+            "export",               "verificationkey",
             "src/zk/inference_trace.zkey",
             "src/zk/verification_key.json",
         });

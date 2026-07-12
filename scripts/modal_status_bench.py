@@ -68,7 +68,7 @@ image = (
         "zig version",
     )
     .run_commands(
-        "curl -sL https://github.com/diku-dk/futhark/releases/download/v0.25.27/"
+        "curl -sL https://github.com/diku-dk/futhark/releases/download/nightly/"
         "futhark-nightly-linux-x86_64.tar.xz -o /tmp/futhark.tar.xz",
         "mkdir -p /opt/futhark",
         "tar -xJf /tmp/futhark.tar.xz -C /opt/futhark --strip-components=1",
@@ -178,6 +178,14 @@ def _download_finephrase(target_path: Path, cap: int) -> Tuple[int, int]:
 
 def _run_futhark_kernels(project_dir: str, env: Dict[str, str]) -> None:
     accel_dir = os.path.join(project_dir, "src", "hw", "accel")
+    _log("Futhark pkg sync (fetch diku-dk/sorts and other declared deps)")
+    _run(
+        ["futhark", "pkg", "sync"],
+        cwd=accel_dir,
+        env=env,
+        check=False,
+        timeout=180,
+    )
     _log("Futhark CPU library build (futhark_kernels.fut)")
     _run(
         [
