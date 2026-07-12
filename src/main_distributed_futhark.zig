@@ -8,7 +8,7 @@ const MGT = @import("tokenizer/mgt.zig").MGT;
 const nccl = @import("distributed/nccl_bindings.zig");
 const modal_gpu = @import("distributed/modal_gpu.zig");
 const core_relational = @import("core_relational/mod.zig");
-const SignalPropagationEngine = core_relational.SignalPropagationEngine;
+const _referenced_core_relational = core_relational;
 
 fn extractDatasetText(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
     const parsed = std.json.parseFromSlice(
@@ -353,11 +353,8 @@ pub fn main() !void {
     var trainer_cfg: TrainerConfig = .{};
     trainer_cfg.learning_rate = learning_rate;
 
-    const provisional_signal = SignalPropagationEngine.init(allocator, undefined, undefined);
-
     const components = TrainerComponents{
         .tokenizer = tokenizer,
-        .signal_engine = provisional_signal,
         .embedding_accel = null,
     };
 
