@@ -362,6 +362,10 @@ pub const VerifiedInferenceEngine = verified_inference_engine.VerifiedInferenceE
 pub const ReasoningOrchestrator = reasoning_orchestrator.ReasoningOrchestrator;
 pub const SignalPropagationEngine = signal_propagation.SignalPropagationEngine;
 
+pub const QuantumTaskAdapter = quantum_task_adapter.QuantumTaskAdapter;
+pub const QuantumSubgraph = quantum_task_adapter.QuantumSubgraph;
+pub const QuantumTaskResult = quantum_task_adapter.QuantumTaskResult;
+
 test "core_relational module integration" {
     const allocator = std.testing.allocator;
 

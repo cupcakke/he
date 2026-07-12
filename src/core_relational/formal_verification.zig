@@ -1530,7 +1530,7 @@ fn checkTemporalConsistencyPredicate(graph: *const SelfSimilarRelationalGraph) V
     return true;
 }
 
-const INVARIANT_TYPE_COUNT = @typeInfo(InvariantType).Enum.fields.len;
+const INVARIANT_TYPE_COUNT = @typeInfo(InvariantType).@"enum".fields.len;
 
 pub const InvariantRegistry = struct {
     invariants: AutoHashMap(u64, *Invariant),

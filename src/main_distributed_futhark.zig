@@ -3,8 +3,12 @@ const GPUCoordinator = @import("distributed/gpu_coordinator.zig").GPUCoordinator
 const dtf = @import("distributed/distributed_trainer_futhark.zig");
 const DistributedTrainerFuthark = dtf.DistributedTrainerFuthark;
 const TrainerConfig = dtf.TrainerConfig;
+const TrainerComponents = dtf.TrainerComponents;
 const MGT = @import("tokenizer/mgt.zig").MGT;
 const nccl = @import("distributed/nccl_bindings.zig");
+const modal_gpu = @import("distributed/modal_gpu.zig");
+const core_relational = @import("core_relational/mod.zig");
+const _referenced_core_relational = core_relational;
 
 fn extractDatasetText(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
     const parsed = std.json.parseFromSlice(
@@ -139,10 +143,44 @@ fn loadDataset(
     return samples.toOwnedSlice();
 }
 
+fn deployToModal(allocator: std.mem.Allocator, args: [][:0]u8) !void {
+    const api_token = try std.process.getEnvVarOwned(allocator, "MODAL_API_TOKEN");
+    defer allocator.free(api_token);
+
+    const model_path: []const u8 = if (args.len > 0) args[0] else "/checkpoints/latest";
+    const dataset_path: []const u8 = if (args.len > 1) args[1] else "/data/dataset/train.jsonl";
+
+    var client = try modal_gpu.ModalGPUClient.init(allocator, api_token);
+    defer client.deinit();
+
+    const job_id = try client.deployTrainingJob(model_path, dataset_path);
+    defer allocator.free(job_id);
+
+    std.debug.print("Deployed training job: {s}\n", .{job_id});
+
+    while (true) {
+        const status = try client.getJobStatus(job_id);
+        defer allocator.free(status);
+
+        std.debug.print("Job status: {s}\n", .{status});
+        if (std.mem.indexOf(u8, status, "\"completed\"") != null or
+            std.mem.indexOf(u8, status, "\"failed\"") != null) break;
+
+        std.time.sleep(30 * std.time.ns_per_s);
+    }
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len > 1 and std.mem.eql(u8, args[1], "--deploy")) {
+        return deployToModal(allocator, args[2..]);
+    }
 
     const world_size = try std.process.getEnvVarOwned(allocator, "WORLD_SIZE");
     defer allocator.free(world_size);
@@ -315,18 +353,21 @@ pub fn main() !void {
     var trainer_cfg: TrainerConfig = .{};
     trainer_cfg.learning_rate = learning_rate;
 
-    var trainer = try DistributedTrainerFuthark.initWithConfig(
+    const components = TrainerComponents{
+        .tokenizer = tokenizer,
+        .embedding_accel = null,
+    };
+
+    var trainer = try DistributedTrainerFuthark.initWithComponents(
         allocator,
         &coordinator,
         model_dim,
         num_layers,
         local_batch_size,
         trainer_cfg,
-        tokenizer,
+        components,
     );
     defer trainer.deinit();
-
-    trainer.postInit();
 
     std.debug.print("[Rank {d}] learning_rate={d}\n", .{ rank, learning_rate });
 

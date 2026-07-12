@@ -27,6 +27,13 @@ const SelfSimilarRelationalGraph = core_relational.SelfSimilarRelationalGraph;
 const QuantumState = core_relational.QuantumState;
 const FractalLPU = @import("../hw/accel/fractal_lpu.zig").FractalLPU;
 const RelationalGraphProcessingUnit = core_relational.RelationalGraphProcessingUnit;
+const VPU = core_relational.VPU;
+const FNDSManager = core_relational.FNDSManager;
+const PatternLocation = core_relational.PatternLocation;
+const FormalVerificationEngine = core_relational.FormalVerificationEngine;
+const SecurityProofEngine = core_relational.SecurityProofEngine;
+const QuantumTaskAdapter = core_relational.QuantumTaskAdapter;
+const QuantumSubgraph = core_relational.QuantumSubgraph;
 
 pub const ServerConfig = struct {
     port: u16 = 8080,
@@ -323,6 +330,12 @@ pub const InferenceServer = struct {
     r_gpu: ?RelationalGraphProcessingUnit,
     active_connections: std.atomic.Value(u32),
     thread_pool: ?*Thread.Pool,
+    vpu: ?VPU,
+    fnds_manager: ?FNDSManager,
+    crev_pipeline: ?CREVPipeline,
+    formal_verifier: ?*FormalVerificationEngine,
+    security_engine: ?*SecurityProofEngine,
+    quantum_adapter: ?QuantumTaskAdapter,
 
     pub fn init(allocator: Allocator, config: ServerConfig) !InferenceServer {
         var api_key: ?[]const u8 = null;
@@ -368,6 +381,12 @@ pub const InferenceServer = struct {
             .r_gpu = null,
             .active_connections = std.atomic.Value(u32).init(0),
             .thread_pool = null,
+            .vpu = null,
+            .fnds_manager = null,
+            .crev_pipeline = null,
+            .formal_verifier = null,
+            .security_engine = null,
+            .quantum_adapter = null,
         };
     }
 
@@ -384,26 +403,46 @@ pub const InferenceServer = struct {
         if (self.embedding) |*emb| {
             emb.deinit();
         }
-        if (self.nsir_graph) |*graph| {
-            graph.deinit();
+        if (self.quantum_adapter) |*qa| {
+            qa.deinit();
         }
-        if (self.chaos_kernel) |*kernel| {
-            kernel.deinit();
+        if (self.security_engine) |se| {
+            se.deinit();
+            self.allocator.destroy(se);
         }
-        if (self.esso) |*esso_opt| {
-            esso_opt.deinit();
+        if (self.formal_verifier) |fv| {
+            fv.deinit();
+            self.allocator.destroy(fv);
         }
-        if (self.surprise_memory) |*sm| {
-            sm.deinit();
+        if (self.crev_pipeline) |*cp| {
+            cp.deinit();
         }
-        if (self.temporal_graph) |*tg| {
-            tg.deinit();
+        if (self.fnds_manager) |*fm| {
+            fm.deinit();
         }
-        if (self.verifier) |v| {
+        if (self.vpu) |*v| {
             v.deinit();
         }
         if (self.signal_engine) |*se| {
             se.deinit();
+        }
+        if (self.temporal_graph) |*tg| {
+            tg.deinit();
+        }
+        if (self.surprise_memory) |*sm| {
+            sm.deinit();
+        }
+        if (self.esso) |*esso_opt| {
+            esso_opt.deinit();
+        }
+        if (self.verifier) |v| {
+            v.deinit();
+        }
+        if (self.chaos_kernel) |*kernel| {
+            kernel.deinit();
+        }
+        if (self.nsir_graph) |*graph| {
+            graph.deinit();
         }
         if (self.z_runtime) |zr| {
             zr.deinit();
@@ -458,6 +497,25 @@ pub const InferenceServer = struct {
 
         self.fractal_lpu = FractalLPU.init(self.allocator, 65536, 1.5) catch null;
         self.r_gpu = RelationalGraphProcessingUnit.init(self.allocator, 4, 4) catch null;
+
+        self.vpu = VPU.init(self.allocator) catch null;
+        self.fnds_manager = FNDSManager.init(self.allocator) catch null;
+        if (self.chaos_kernel) |*ck| {
+            self.crev_pipeline = CREVPipeline.init(self.allocator, ck) catch null;
+        }
+        const fv_ptr = self.allocator.create(FormalVerificationEngine) catch null;
+        if (fv_ptr) |fv| {
+            fv.* = FormalVerificationEngine.init(self.allocator);
+            self.formal_verifier = fv;
+        }
+        const se_ptr = self.allocator.create(SecurityProofEngine) catch null;
+        if (se_ptr) |se| {
+            se.* = SecurityProofEngine.init(self.allocator);
+            self.security_engine = se;
+        }
+        if (self.nsir_graph) |*graph| {
+            self.quantum_adapter = QuantumTaskAdapter.init(self.allocator, graph);
+        }
     }
 
     fn isModelLoaded(self: *const InferenceServer) bool {
@@ -940,6 +998,93 @@ pub const InferenceServer = struct {
                 _ = zr.createVariable(var_name, null) catch {};
             }
 
+            if (self.vpu) |*v| {
+                if (self.nsir_graph) |*graph| {
+                    var graph_embeddings_opt = v.computeGraphEmbeddings(graph) catch null;
+                    if (graph_embeddings_opt) |*embs| {
+                        defer embs.deinit();
+                        if (embs.items.len > 0) {
+                            const req_count = self.request_count.load(.monotonic);
+                            const theta: f64 = @as(f64, @floatFromInt(req_count % 314)) / 100.0;
+                            const phi: f64 = @as(f64, @floatFromInt(req_count % 628)) / 100.0;
+                            v.quantumVectorOps(embs.items, theta, phi);
+                            if (embs.items.len >= 2) {
+                                var sim_matrix_opt = v.computeSimilarityMatrix(embs.items) catch null;
+                                if (sim_matrix_opt) |*sm| {
+                                    defer {
+                                        for (sm.items) |*row| row.deinit();
+                                        sm.deinit();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (self.fnds_manager) |*fm| {
+                const tree_id_opt = fm.createTree(4, 3) catch null;
+                if (tree_id_opt) |tid| {
+                    const req_bytes = std.mem.sliceAsBytes(input_tensor.data);
+                    var node_id_buf: [64]u8 = undefined;
+                    const req_count = self.request_count.load(.monotonic);
+                    const node_id = std.fmt.bufPrint(&node_id_buf, "inf_{d}", .{req_count}) catch "inf_node";
+                    _ = fm.insertIntoTree(tid, node_id, req_bytes, 0) catch {};
+                    fm.createIndex("inference_patterns") catch {};
+                    const pattern_len = @min(req_bytes.len, 32);
+                    if (pattern_len > 0) {
+                        var loc = PatternLocation.init(
+                            self.allocator,
+                            tid,
+                            0,
+                            node_id,
+                            0,
+                            pattern_len,
+                            1.0,
+                        ) catch null;
+                        if (loc) |*loc_val| {
+                            var loc_added = false;
+                            defer if (!loc_added) loc_val.deinit();
+                            fm.addPatternToIndex("inference_patterns", req_bytes[0..pattern_len], loc_val.*) catch {};
+                            loc_added = true;
+                        }
+                    }
+                }
+            }
+
+            if (self.crev_pipeline) |*cp| {
+                _ = cp.processTextStream(request.text) catch {};
+            }
+
+            if (self.formal_verifier) |fv| {
+                if (self.nsir_graph) |*graph| {
+                    _ = fv.verifyGraph(graph) catch {};
+                }
+            }
+
+            if (self.security_engine) |se| {
+                if (self.nsir_graph) |*graph| {
+                    _ = se.proveInformationFlowSecurity(graph) catch {};
+                }
+            }
+
+            if (self.quantum_adapter) |*qa| {
+                var subgraphs_opt = qa.identifyQuantumSubgraphs() catch null;
+                if (subgraphs_opt) |*sgs| {
+                    defer {
+                        for (sgs.items) |*sg| sg.deinit();
+                        sgs.deinit();
+                    }
+                    for (sgs.items) |*sg| {
+                        var task_result = qa.executeQuantumTask(sg) catch continue;
+                        defer task_result.deinit();
+                        if (task_result.success) {
+                            qa.applyResultsToGraph(sg, &task_result) catch {};
+                        }
+                    }
+                }
+            }
+
             boostAboveMean(input_tensor.data);
 
             embeddings = try allocator.alloc(f32, @min(dim, 128));
@@ -1189,6 +1334,93 @@ pub const InferenceServer = struct {
                     if (self.nsir_graph) |*graph| {
                         const tensor_bytes = std.mem.sliceAsBytes(input_tensor.data);
                         _ = graph.encodeInformation(tensor_bytes) catch {};
+                    }
+
+                    if (self.vpu) |*v| {
+                        if (self.nsir_graph) |*graph| {
+                            var graph_embeddings_opt = v.computeGraphEmbeddings(graph) catch null;
+                            if (graph_embeddings_opt) |*embs| {
+                                defer embs.deinit();
+                                if (embs.items.len > 0) {
+                                    const req_count = self.request_count.load(.monotonic);
+                                    const theta: f64 = @as(f64, @floatFromInt(req_count % 314)) / 100.0;
+                                    const phi: f64 = @as(f64, @floatFromInt(req_count % 628)) / 100.0;
+                                    v.quantumVectorOps(embs.items, theta, phi);
+                                    if (embs.items.len >= 2) {
+                                        var sim_matrix_opt = v.computeSimilarityMatrix(embs.items) catch null;
+                                        if (sim_matrix_opt) |*sm| {
+                                            defer {
+                                                for (sm.items) |*row| row.deinit();
+                                                sm.deinit();
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (self.fnds_manager) |*fm| {
+                        const tree_id_opt = fm.createTree(4, 3) catch null;
+                        if (tree_id_opt) |tid| {
+                            const req_bytes = std.mem.sliceAsBytes(input_tensor.data);
+                            var node_id_buf: [64]u8 = undefined;
+                            const req_count = self.request_count.load(.monotonic);
+                            const node_id = std.fmt.bufPrint(&node_id_buf, "batch_{d}_{d}", .{ req_count, ti }) catch "batch_node";
+                            _ = fm.insertIntoTree(tid, node_id, req_bytes, 0) catch {};
+                            fm.createIndex("batch_inference_patterns") catch {};
+                            const pattern_len = @min(req_bytes.len, 32);
+                            if (pattern_len > 0) {
+                                var loc = PatternLocation.init(
+                                    self.allocator,
+                                    tid,
+                                    0,
+                                    node_id,
+                                    0,
+                                    pattern_len,
+                                    1.0,
+                                ) catch null;
+                                if (loc) |*loc_val| {
+                                    var loc_added = false;
+                                    defer if (!loc_added) loc_val.deinit();
+                                    fm.addPatternToIndex("batch_inference_patterns", req_bytes[0..pattern_len], loc_val.*) catch {};
+                                    loc_added = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (self.crev_pipeline) |*cp| {
+                        _ = cp.processTextStream(batch_req.texts[ti]) catch {};
+                    }
+
+                    if (self.formal_verifier) |fv| {
+                        if (self.nsir_graph) |*graph| {
+                            _ = fv.verifyGraph(graph) catch {};
+                        }
+                    }
+
+                    if (self.security_engine) |se| {
+                        if (self.nsir_graph) |*graph| {
+                            _ = se.proveInformationFlowSecurity(graph) catch {};
+                        }
+                    }
+
+                    if (self.quantum_adapter) |*qa| {
+                        var subgraphs_opt = qa.identifyQuantumSubgraphs() catch null;
+                        if (subgraphs_opt) |*sgs| {
+                            defer {
+                                for (sgs.items) |*sg| sg.deinit();
+                                sgs.deinit();
+                            }
+                            for (sgs.items) |*sg| {
+                                var task_result = qa.executeQuantumTask(sg) catch continue;
+                                defer task_result.deinit();
+                                if (task_result.success) {
+                                    qa.applyResultsToGraph(sg, &task_result) catch {};
+                                }
+                            }
+                        }
                     }
                 }
             }

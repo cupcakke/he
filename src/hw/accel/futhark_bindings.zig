@@ -1,8 +1,51 @@
+const _build_gpu_enabled: bool = blk: {
+    const opts = @import("build_options");
+    if (@hasDecl(@TypeOf(opts), "gpu_acceleration")) break :blk opts.gpu_acceleration;
+    break :blk false;
+};
+
 pub const struct_futhark_context_config = opaque {};
 pub const struct_futhark_context = opaque {};
 pub const struct_futhark_f16_1d = opaque {};
 pub const struct_futhark_f16_2d = opaque {};
 pub const struct_futhark_f16_3d = opaque {};
+
+pub const gpu_stub = if (_build_gpu_enabled) struct {
+    pub extern "c" fn futhark_context_config_set_device(cfg: ?*struct_futhark_context_config, device: [*:0]const u8) void;
+    pub extern "c" fn futhark_context_config_set_default_group_size(cfg: ?*struct_futhark_context_config, size: c_int) void;
+    pub extern "c" fn futhark_context_config_set_default_num_groups(cfg: ?*struct_futhark_context_config, num: c_int) void;
+    pub extern "c" fn futhark_context_config_set_default_tile_size(cfg: ?*struct_futhark_context_config, size: c_int) void;
+
+    pub inline fn set_device(cfg: ?*struct_futhark_context_config, device: [*:0]const u8) void {
+        futhark_context_config_set_device(cfg, device);
+    }
+    pub inline fn set_default_group_size(cfg: ?*struct_futhark_context_config, size: c_int) void {
+        futhark_context_config_set_default_group_size(cfg, size);
+    }
+    pub inline fn set_default_num_groups(cfg: ?*struct_futhark_context_config, num: c_int) void {
+        futhark_context_config_set_default_num_groups(cfg, num);
+    }
+    pub inline fn set_default_tile_size(cfg: ?*struct_futhark_context_config, size: c_int) void {
+        futhark_context_config_set_default_tile_size(cfg, size);
+    }
+} else struct {
+    pub inline fn set_device(cfg: ?*struct_futhark_context_config, device: [*:0]const u8) void {
+        _ = cfg;
+        _ = device;
+    }
+    pub inline fn set_default_group_size(cfg: ?*struct_futhark_context_config, size: c_int) void {
+        _ = cfg;
+        _ = size;
+    }
+    pub inline fn set_default_num_groups(cfg: ?*struct_futhark_context_config, num: c_int) void {
+        _ = cfg;
+        _ = num;
+    }
+    pub inline fn set_default_tile_size(cfg: ?*struct_futhark_context_config, size: c_int) void {
+        _ = cfg;
+        _ = size;
+    }
+};
 pub const struct_futhark_f32_1d = opaque {};
 pub const struct_futhark_f32_2d = opaque {};
 pub const struct_futhark_f32_3d = opaque {};
@@ -13,11 +56,6 @@ pub const struct_futhark_opaque_tup3_grad_full = opaque {};
 
 pub extern "c" fn futhark_context_config_new() ?*struct_futhark_context_config;
 pub extern "c" fn futhark_context_config_free(cfg: ?*struct_futhark_context_config) void;
-pub extern "c" fn futhark_context_config_set_device(cfg: ?*struct_futhark_context_config, device: [*:0]const u8) void;
-pub extern "c" fn futhark_context_config_set_platform(cfg: ?*struct_futhark_context_config, platform: c_int) void;
-pub extern "c" fn futhark_context_config_set_default_group_size(cfg: ?*struct_futhark_context_config, size: c_int) void;
-pub extern "c" fn futhark_context_config_set_default_num_groups(cfg: ?*struct_futhark_context_config, num: c_int) void;
-pub extern "c" fn futhark_context_config_set_default_tile_size(cfg: ?*struct_futhark_context_config, size: c_int) void;
 
 pub extern "c" fn futhark_context_new(cfg: ?*struct_futhark_context_config) ?*struct_futhark_context;
 pub extern "c" fn futhark_context_free(ctx: ?*struct_futhark_context) void;
