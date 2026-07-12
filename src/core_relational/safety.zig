@@ -17,9 +17,9 @@ pub fn safeIntCast(comptime T: type, value: anytype) SafetyError!T {
     const source_info = @typeInfo(SourceT);
     const target_info = @typeInfo(T);
 
-    if (source_info == .Int and target_info == .Int) {
-        const source_int = source_info.Int;
-        const target_int = target_info.Int;
+    if (source_info == .int and target_info == .int) {
+        const source_int = source_info.int;
+        const target_int = target_info.int;
 
         if (target_int.signedness == .unsigned) {
             if (source_int.signedness == .signed) {
@@ -70,23 +70,23 @@ pub fn safePtrCast(comptime T: type, ptr: anytype) SafetyError!T {
     }
 
     const ptr_info = @typeInfo(@TypeOf(ptr));
-    if (ptr_info != .Pointer and ptr_info != .Optional) {
+    if (ptr_info != .pointer and ptr_info != .optional) {
         return SafetyError.InvalidPointer;
     }
 
-    if (ptr_info == .Optional) {
+    if (ptr_info == .optional) {
         if (ptr == null) {
             return SafetyError.NullPointer;
         }
     }
 
     const target_info = @typeInfo(T);
-    if (target_info != .Pointer) {
+    if (target_info != .pointer) {
         return SafetyError.InvalidPointer;
     }
 
-    const target_alignment = target_info.Pointer.alignment;
-    const addr = @intFromPtr(if (ptr_info == .Optional) ptr.? else ptr);
+    const target_alignment = target_info.pointer.alignment;
+    const addr = @intFromPtr(if (ptr_info == .optional) ptr.? else ptr);
 
     if (addr == 0) {
         return SafetyError.NullPointer;
@@ -96,23 +96,23 @@ pub fn safePtrCast(comptime T: type, ptr: anytype) SafetyError!T {
         return SafetyError.MisalignedPointer;
     }
 
-    return @ptrCast(@alignCast(if (ptr_info == .Optional) ptr.? else ptr));
+    return @ptrCast(@alignCast(if (ptr_info == .optional) ptr.? else ptr));
 }
 
 pub fn validatePointer(ptr: anytype) bool {
     const ptr_info = @typeInfo(@TypeOf(ptr));
 
-    if (ptr_info == .Optional) {
+    if (ptr_info == .optional) {
         if (ptr == null) {
             return false;
         }
     }
 
-    if (ptr_info != .Pointer and ptr_info != .Optional) {
+    if (ptr_info != .pointer and ptr_info != .optional) {
         return false;
     }
 
-    const addr = @intFromPtr(if (ptr_info == .Optional) ptr.? else ptr);
+    const addr = @intFromPtr(if (ptr_info == .optional) ptr.? else ptr);
     return addr != 0;
 }
 

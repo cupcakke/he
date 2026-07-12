@@ -124,6 +124,7 @@ pub extern fn cudaStreamCreate(pStream: **anyopaque) CudaError;
 pub extern fn cudaStreamDestroy(stream: *anyopaque) CudaError;
 pub extern fn cudaStreamSynchronize(stream: *anyopaque) CudaError;
 pub extern fn cudaGetErrorString(err: CudaError) [*:0]const u8;
+pub extern fn cudaGetLastError() CudaError;
 
 pub const cudaMemcpyKind = struct {
     pub const cudaMemcpyHostToDevice: c_int = 1;

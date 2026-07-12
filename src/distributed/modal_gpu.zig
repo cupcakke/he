@@ -24,7 +24,6 @@ pub const ModalGPUClient = struct {
     }
 
     pub fn deployTrainingJob(self: *ModalGPUClient, model_path: []const u8, dataset_path: []const u8) ![]const u8 {
-        const uri = try std.Uri.parse("https://api.modal.com/v1/functions/deploy");
         const payload = try std.json.stringifyAlloc(self.allocator, .{
             .gpu = self.gpu_preferences,
             .gpu_count = self.gpu_count,
@@ -36,56 +35,49 @@ pub const ModalGPUClient = struct {
         }, .{});
         defer self.allocator.free(payload);
 
-        return try self.sendRequest(.POST, uri, payload);
+        return try self.sendRequest(.POST, "https://api.modal.com/v1/functions/deploy", payload);
     }
 
     pub fn getJobStatus(self: *ModalGPUClient, job_id: []const u8) ![]const u8 {
         const uri_str = try std.fmt.allocPrint(self.allocator, "https://api.modal.com/v1/functions/{s}/status", .{job_id});
         defer self.allocator.free(uri_str);
 
-        const uri = try std.Uri.parse(uri_str);
-        return try self.sendRequest(.GET, uri, null);
+        return try self.sendRequest(.GET, uri_str, null);
     }
 
-    fn sendRequest(self: *ModalGPUClient, method: http.Method, uri: std.Uri, body: ?[]const u8) ![]const u8 {
+    fn sendRequest(self: *ModalGPUClient, method: http.Method, url: []const u8, body: ?[]const u8) ![]const u8 {
         const authorization_value = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{self.api_token});
         defer self.allocator.free(authorization_value);
 
-        var server_header_buffer = try self.allocator.alloc(u8, 16 * 1024);
-        defer self.allocator.free(server_header_buffer);
+        var response_storage = std.ArrayList(u8).init(self.allocator);
+        errdefer response_storage.deinit();
 
-        var req = try self.http_client.open(method, uri, .{
-            .server_header_buffer = server_header_buffer,
-        });
-        errdefer req.deinit();
+        const fetch_options = if (body) |b|
+            http.Client.FetchOptions{
+                .method = method,
+                .location = .{ .url = url },
+                .headers = .{
+                    .authorization = .{ .override = authorization_value },
+                    .content_type = .{ .override = "application/json" },
+                },
+                .payload = b,
+                .response_storage = .{ .dynamic = &response_storage },
+                .max_append_size = 1024 * 1024,
+            }
+        else
+            http.Client.FetchOptions{
+                .method = method,
+                .location = .{ .url = url },
+                .headers = .{
+                    .authorization = .{ .override = authorization_value },
+                },
+                .response_storage = .{ .dynamic = &response_storage },
+                .max_append_size = 1024 * 1024,
+            };
 
-        try req.headers.append("Authorization", authorization_value);
-        if (body != null) {
-            try req.headers.append("Content-Type", "application/json");
-        }
+        const result = try self.http_client.fetch(fetch_options);
+        _ = result;
 
-        return try self.sendAndReadResponse(&req, body);
-    }
-
-    fn sendAndReadResponse(self: *ModalGPUClient, req: *http.Client.Request, body: ?[]const u8) ![]const u8 {
-        if (body) |request_body| {
-            req.transfer_encoding = .{ .content_length = request_body.len };
-            try req.send();
-            try req.writer().writeAll(request_body);
-            try req.finish();
-            try req.wait();
-        } else {
-            try req.send();
-            try req.finish();
-            try req.wait();
-        }
-
-        const response_body = try req.reader().readAllAlloc(self.allocator, 1024 * 1024);
-        return response_body;
-    }
-
-    fn sendCompat(req: *http.Client.Request) !void {
-        _ = req;
+        return response_storage.toOwnedSlice();
     }
 };
-

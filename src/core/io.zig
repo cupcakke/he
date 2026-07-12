@@ -800,7 +800,7 @@ pub fn isFile(path: []const u8) !bool {
 pub inline fn toLittleEndian(T: type, value: T) T {
     comptime {
         const info = @typeInfo(T);
-        if (info != .Int) @compileError("toLittleEndian requires integer type");
+        if (info != .int) @compileError("toLittleEndian requires integer type");
     }
     return switch (comptime builtin.target.cpu.arch.endian()) {
         .little => value,
@@ -811,7 +811,7 @@ pub inline fn toLittleEndian(T: type, value: T) T {
 pub inline fn fromLittleEndian(T: type, bytes: *const [@sizeOf(T)]u8) T {
     comptime {
         const info = @typeInfo(T);
-        if (info != .Int) @compileError("fromLittleEndian requires integer type");
+        if (info != .int) @compileError("fromLittleEndian requires integer type");
     }
     return mem.readInt(T, bytes, .little);
 }
@@ -819,7 +819,7 @@ pub inline fn fromLittleEndian(T: type, bytes: *const [@sizeOf(T)]u8) T {
 pub inline fn toBigEndian(T: type, value: T) T {
     comptime {
         const info = @typeInfo(T);
-        if (info != .Int) @compileError("toBigEndian requires integer type");
+        if (info != .int) @compileError("toBigEndian requires integer type");
     }
     return switch (comptime builtin.target.cpu.arch.endian()) {
         .little => @byteSwap(value),
@@ -830,7 +830,7 @@ pub inline fn toBigEndian(T: type, value: T) T {
 pub inline fn fromBigEndian(T: type, bytes: *const [@sizeOf(T)]u8) T {
     comptime {
         const info = @typeInfo(T);
-        if (info != .Int) @compileError("fromBigEndian requires integer type");
+        if (info != .int) @compileError("fromBigEndian requires integer type");
     }
     return mem.readInt(T, bytes, .big);
 }

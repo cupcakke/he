@@ -44,11 +44,11 @@ pub const FutharkContext = struct {
         const cfg = futhark.futhark_context_config_new();
         if (cfg == null) return AccelError.FutharkConfigFailed;
 
-        if (comptime gpu_enabled) {
-            futhark.futhark_context_config_set_device(cfg, "");
-            futhark.futhark_context_config_set_default_group_size(cfg, 256);
-            futhark.futhark_context_config_set_default_num_groups(cfg, 128);
-            futhark.futhark_context_config_set_default_tile_size(cfg, 32);
+        if (gpu_enabled) {
+            futhark.gpu_stub.set_device(cfg, "");
+            futhark.gpu_stub.set_default_group_size(cfg, 256);
+            futhark.gpu_stub.set_default_num_groups(cfg, 128);
+            futhark.gpu_stub.set_default_tile_size(cfg, 32);
         }
 
         const ctx = futhark.futhark_context_new(cfg);
@@ -120,29 +120,48 @@ fn get1DDevicePtr(ctx: *FutharkContext, array: *FutharkArray1DF16) AccelError!*a
 pub const PinnedMemory = struct {
     ptr: ?*anyopaque,
     size: usize,
+    fallback_slice: ?[]align(64) u8,
 
     const Self = @This();
 
     pub fn alloc(size: usize) AccelError!Self {
         if (size == 0) {
-            return Self{ .ptr = null, .size = 0 };
+            return Self{ .ptr = null, .size = 0, .fallback_slice = null };
         }
 
-        var ptr: ?*anyopaque = null;
-        const err = cuda.cudaHostAlloc(&ptr, size, cuda.cudaHostAllocDefault);
-        if (err != cuda.cudaSuccess) {
-            return AccelError.CudaHostAllocFailed;
+        if (gpu_enabled) {
+            var ptr: ?*anyopaque = null;
+            const err = cuda.cudaHostAlloc(&ptr, size, cuda.cudaHostAllocDefault);
+            if (err != cuda.cudaSuccess) {
+                return AccelError.CudaHostAllocFailed;
+            }
+            return Self{
+                .ptr = ptr,
+                .size = size,
+                .fallback_slice = null,
+            };
         }
 
+        const slice = std.heap.page_allocator.alignedAlloc(u8, 64, size) catch return AccelError.CudaHostAllocFailed;
         return Self{
-            .ptr = ptr,
+            .ptr = @ptrCast(slice.ptr),
             .size = size,
+            .fallback_slice = slice,
         };
     }
 
     pub fn free(self: *Self) void {
+        if (self.fallback_slice) |slice| {
+            std.heap.page_allocator.free(slice);
+            self.fallback_slice = null;
+            self.ptr = null;
+            self.size = 0;
+            return;
+        }
         if (self.ptr) |p| {
-            _ = cuda.cudaFreeHost(p);
+            if (gpu_enabled) {
+                _ = cuda.cudaFreeHost(p);
+            }
             self.ptr = null;
             self.size = 0;
         }

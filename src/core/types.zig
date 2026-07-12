@@ -583,12 +583,12 @@ pub fn sum(comptime T: type, slice: []const T) Error!T {
     var i: usize = 0;
     while (i < slice.len) : (i += 1) {
         switch (@typeInfo(T)) {
-            .Int => {
+            .int => {
                 const r = @addWithOverflow(total, slice[i]);
                 if (r[1] != 0) return Error.Overflow;
                 total = r[0];
             },
-            .Float => {
+            .float => {
                 total += slice[i];
             },
             else => total += slice[i],
@@ -602,12 +602,12 @@ pub fn prod(comptime T: type, slice: []const T) Error!T {
     var i: usize = 0;
     while (i < slice.len) : (i += 1) {
         switch (@typeInfo(T)) {
-            .Int => {
+            .int => {
                 const r = @mulWithOverflow(total, slice[i]);
                 if (r[1] != 0) return Error.Overflow;
                 total = r[0];
             },
-            .Float => {
+            .float => {
                 total *= slice[i];
                 if (!math.isFinite(total)) return Error.Overflow;
             },
@@ -623,14 +623,14 @@ pub fn dotProduct(comptime T: type, a: []const T, b: []const T) Error!T {
     var i: usize = 0;
     while (i < a.len) : (i += 1) {
         switch (@typeInfo(T)) {
-            .Int => {
+            .int => {
                 const mr = @mulWithOverflow(a[i], b[i]);
                 if (mr[1] != 0) return Error.Overflow;
                 const ar = @addWithOverflow(result, mr[0]);
                 if (ar[1] != 0) return Error.Overflow;
                 result = ar[0];
             },
-            .Float => {
+            .float => {
                 result += a[i] * b[i];
             },
             else => result += a[i] * b[i],
@@ -652,8 +652,8 @@ pub fn norm(comptime T: type, vec: []const T) f64 {
     var i: usize = 0;
     while (i < vec.len) : (i += 1) {
         const f: f64 = switch (@typeInfo(T)) {
-            .Int => @floatFromInt(vec[i]),
-            .Float => @floatCast(vec[i]),
+            .int => @floatFromInt(vec[i]),
+            .float => @floatCast(vec[i]),
             else => @compileError("norm not supported for type " ++ @typeName(T)),
         };
         sq_sum += f * f;
@@ -663,12 +663,12 @@ pub fn norm(comptime T: type, vec: []const T) f64 {
 
 pub fn lerp(comptime T: type, a: T, b: T, t: f64) T {
     return switch (@typeInfo(T)) {
-        .Int => blk: {
+        .int => blk: {
             const fa: f64 = @floatFromInt(a);
             const fb: f64 = @floatFromInt(b);
             break :blk @intFromFloat(fa + (fb - fa) * t);
         },
-        .Float => blk: {
+        .float => blk: {
             const fa: f64 = @floatCast(a);
             const fb: f64 = @floatCast(b);
             break :blk @floatCast(fa + (fb - fa) * t);
@@ -727,7 +727,7 @@ pub fn lcm(a: usize, b: usize) Error!usize {
 pub fn pow(comptime T: type, base: T, exp: usize) Error!T {
     const ti = @typeInfo(T);
     switch (ti) {
-        .Int => {
+        .int => {
             var result: T = 1;
             var e = exp;
             var b = base;
@@ -746,7 +746,7 @@ pub fn pow(comptime T: type, base: T, exp: usize) Error!T {
             }
             return result;
         },
-        .Float => {
+        .float => {
             var result: T = 1;
             var e = exp;
             var b = base;
@@ -769,8 +769,8 @@ pub fn pow(comptime T: type, base: T, exp: usize) Error!T {
 
 pub fn log2(comptime T: type, x: T) f64 {
     return switch (@typeInfo(T)) {
-        .Int => @log2(@as(f64, @floatFromInt(x))),
-        .Float => @log2(@as(f64, @floatCast(x))),
+        .int => @log2(@as(f64, @floatFromInt(x))),
+        .float => @log2(@as(f64, @floatCast(x))),
         else => @compileError("log2 not supported for type " ++ @typeName(T)),
     };
 }
@@ -788,7 +788,7 @@ pub fn nextPowerOfTwo(n: usize) usize {
 
 pub fn popcount(comptime T: type, x: T) usize {
     return switch (@typeInfo(T)) {
-        .Int => blk: {
+        .int => blk: {
             var count: usize = 0;
             var val = x;
             while (val != 0) {
@@ -803,7 +803,7 @@ pub fn popcount(comptime T: type, x: T) usize {
 
 pub fn leadingZeros(comptime T: type, x: T) usize {
     return switch (@typeInfo(T)) {
-        .Int => |info| blk: {
+        .int => |info| blk: {
             if (x == 0) break :blk info.bits;
             var count: usize = 0;
             var val = x;
@@ -820,7 +820,7 @@ pub fn leadingZeros(comptime T: type, x: T) usize {
 
 pub fn trailingZeros(comptime T: type, x: T) usize {
     return switch (@typeInfo(T)) {
-        .Int => |info| blk: {
+        .int => |info| blk: {
             if (x == 0) break :blk info.bits;
             var count: usize = 0;
             var val = x;
@@ -835,7 +835,7 @@ pub fn trailingZeros(comptime T: type, x: T) usize {
 
 pub fn reverseBits(comptime T: type, x: T) T {
     return switch (@typeInfo(T)) {
-        .Int => |info| blk: {
+        .int => |info| blk: {
             var rev: T = 0;
             var val = x;
             const bits = info.bits;
