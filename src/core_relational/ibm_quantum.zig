@@ -1,276 +1,255 @@
-entry rsf_forward [n][half] (input: [n][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16) : *[n][half*2]f16 =
-  let d = half * 2
-  in map (\row ->
-    let x1 = row[0:half] :> [half]f16
-    let x2 = row[half:d] :> [half]f16
-    let scale = map (\j ->
-      let sum = weights_s[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_s[j][0:half] :> [half]f16) x2)
-      let clipped = f16.max clip_min (f16.min clip_max sum)
-      in f16.exp clipped
-    ) (iota half)
-    let y1 = map2 (\a b -> a f16.* b) x1 scale
-    let trans = map (\j ->
-      weights_t[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_t[j][0:half] :> [half]f16) y1)
-    ) (iota half)
-    let y2 = map2 (\a b -> a f16.+ b) x2 trans
-    in y1 ++ y2 :> [half*2]f16
-  ) input
+const std = @import("std");
+const http = std.http;
 
-entry rsf_backward [n][half] (input: [n][half*2]f16) (grad_output: [n][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16)
-  : ([half][half+1]f16, [half][half+1]f16) =
-  let d = half * 2
-  let zero_mat_ws = replicate half (replicate (half+1) (f16.i32 0))
-  let zero_mat_wt = replicate half (replicate (half+1) (f16.i32 0))
-  in loop (grad_ws, grad_wt) = (zero_mat_ws, zero_mat_wt) for i < n do
-    let row = input[i]
-    let g_row = grad_output[i]
-    let x1 = row[0:half] :> [half]f16
-    let x2 = row[half:d] :> [half]f16
-    let pre_scale = map (\j ->
-      weights_s[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_s[j][0:half] :> [half]f16) x2)
-    ) (iota half)
-    let scale = map (\ps ->
-      let clipped = f16.max clip_min (f16.min clip_max ps)
-      in f16.exp clipped
-    ) pre_scale
-    let y1 = map2 (\a b -> a f16.* b) x1 scale
-    let dy1 = g_row[0:half] :> [half]f16
-    let dy2 = g_row[half:d] :> [half]f16
-    let grad_wt_batch = map (\j ->
-      map (\k -> if k < half then dy2[j] f16.* y1[k] else dy2[j]) (iota (half+1))
-    ) (iota half)
-    let dy1_total = map2 (\dy1_j j ->
-      dy1_j f16.+ f16.sum (map (\k -> weights_t[k][j] f16.* dy2[k]) (iota half))
-    ) dy1 (iota half)
-    let ds = map2 (\j ps ->
-      let in_range = ps f16.>= clip_min && ps f16.<= clip_max
-      in if in_range then dy1_total[j] f16.* y1[j] else (f16.i32 0)
-    ) (iota half) pre_scale
-    let grad_ws_batch = map (\j ->
-      map (\k -> if k < half then ds[j] f16.* x2[k] else ds[j]) (iota (half+1))
-    ) (iota half)
-    let new_grad_ws = map2 (map2 (\a b -> a f16.+ b)) grad_ws grad_ws_batch
-    let new_grad_wt = map2 (map2 (\a b -> a f16.+ b)) grad_wt grad_wt_batch
-    in (new_grad_ws, new_grad_wt)
+pub const IBMQuantumClient = struct {
+    allocator: std.mem.Allocator,
+    api_token: []const u8,
+    crn: []const u8,
+    http_client: http.Client,
+    owns_crn: bool,
+    backend_name: []const u8,
+    owns_backend_name: bool,
 
-entry sfd_update_mat [d][e] (weights: *[d][e]f16) (gradients: [d][e]f16) (learning_rate: f16) (momentum: f16) (velocity: *[d][e]f16) : (*[d][e]f16, *[d][e]f16) =
-  let new_velocity = map2 (map2 (\v g -> momentum f16.* v f16.+ learning_rate f16.* g)) velocity gradients
-  let new_weights = map2 (map2 (\w v -> w f16.- v)) weights (copy new_velocity)
-  in (new_weights, new_velocity)
+    pub fn init(allocator: std.mem.Allocator, api_token: []const u8) !IBMQuantumClient {
+        return initWithCrn(allocator, api_token, null, null);
+    }
 
-entry compute_loss [n][d] (output: [n][d]f16) (target: [n][d]f16) : f16 =
-  let squared_diff = map2 (map2 (\o t -> (o f16.- t) f16.* (o f16.- t))) output target
-  let total = f16.sum (flatten squared_diff)
-  let count = f16.i64 (n * d)
-  in total f16./ count
+    pub fn initWithBackend(allocator: std.mem.Allocator, api_token: []const u8, backend: []const u8) !IBMQuantumClient {
+        return initWithCrn(allocator, api_token, null, backend);
+    }
 
-entry batch_forward [batch_size][seq_len][half] (inputs: [batch_size][seq_len][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16) : *[batch_size][seq_len][half*2]f16 =
-  map (\sample -> rsf_forward sample weights_s weights_t clip_min clip_max) inputs
+    pub fn initWithCrn(allocator: std.mem.Allocator, api_token: []const u8, crn_override: ?[]const u8, backend_override: ?[]const u8) !IBMQuantumClient {
+        const crn = if (crn_override) |value|
+            try allocator.dupe(u8, value)
+        else if (std.posix.getenv("IBM_QUANTUM_CRN")) |environment_crn|
+            try allocator.dupe(u8, environment_crn)
+        else
+            return error.MissingIBMQuantumCRN;
+        errdefer allocator.free(crn);
 
-entry batch_compute_loss [batch_size][seq_len][d] (outputs: [batch_size][seq_len][d]f16) (targets: [batch_size][seq_len][d]f16) : f16 =
-  let squared_diff_f32 = map2 (map2 (map2 (\o t ->
-    let diff = (f32.f16 o) - (f32.f16 t)
-    in diff * diff
-  ))) outputs targets
-  let total_f32 = f32.sum (flatten (flatten squared_diff_f32))
-  let count_f32 = f32.i64 (batch_size * seq_len * d)
-  let mean_f32 = total_f32 / count_f32
-  in f16.f32 mean_f32
+        const backend = if (backend_override) |value|
+            try allocator.dupe(u8, value)
+        else if (std.posix.getenv("IBM_QUANTUM_BACKEND")) |environment_backend|
+            try allocator.dupe(u8, environment_backend)
+        else
+            try allocator.dupe(u8, "ibm_brisbane");
+        errdefer allocator.free(backend);
 
-entry batch_gradients [batch_size][seq_len][half] (inputs: [batch_size][seq_len][half*2]f16)
-  (grad_outputs: [batch_size][seq_len][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16)
-  : ([half][half+1]f16, [half][half+1]f16) =
-  let results = map2 (\inp g_out ->
-    rsf_backward inp g_out weights_s weights_t clip_min clip_max
-  ) inputs grad_outputs
-  let gs_list = map (\(gs, _) -> gs) results
-  let gt_list = map (\(_, gt) -> gt) results
-  let gs_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gs_list
-  let gt_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gt_list
-  in (copy gs_total, copy gt_total)
+        const token = try allocator.dupe(u8, api_token);
+        errdefer {
+            @memset(token, 0);
+            allocator.free(token);
+        }
 
-entry rsf_backward_full [n][half] (input: [n][half*2]f16) (grad_output: [n][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16)
-  : ([half][half+1]f16, [half][half+1]f16, [n][half*2]f16) =
-  let d = half * 2
-  let per_token = map2 (\row g_row ->
-    let x1 = row[0:half] :> [half]f16
-    let x2 = row[half:d] :> [half]f16
-    let pre_scale = map (\j ->
-      weights_s[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_s[j][0:half] :> [half]f16) x2)
-    ) (iota half)
-    let scale = map (\ps ->
-      let clipped = f16.max clip_min (f16.min clip_max ps)
-      in f16.exp clipped
-    ) pre_scale
-    let y1 = map2 (\a b -> a f16.* b) x1 scale
-    let dy1 = g_row[0:half] :> [half]f16
-    let dy2 = g_row[half:d] :> [half]f16
-    let dy1_total = map2 (\dy1_j j ->
-      dy1_j f16.+ f16.sum (map (\k -> weights_t[k][j] f16.* dy2[k]) (iota half))
-    ) dy1 (iota half)
-    let ds = map2 (\j ps ->
-      let in_range = ps f16.>= clip_min && ps f16.<= clip_max
-      in if in_range then dy1_total[j] f16.* y1[j] else (f16.i32 0)
-    ) (iota half) pre_scale
-    let grad_wt_tok = map (\j -> map (\k -> if k < half then dy2[j] f16.* y1[k] else dy2[j]) (iota (half+1))) (iota half)
-    let grad_ws_tok = map (\j -> map (\k -> if k < half then ds[j] f16.* x2[k] else ds[j]) (iota (half+1))) (iota half)
-    let dx1 = map2 (\g s -> g f16.* s) dy1_total scale
-    let dx2_from_ds = map (\k ->
-      f16.sum (map (\j -> ds[j] f16.* weights_s[j][k]) (iota half))
-    ) (iota half)
-    let dx2 = map2 (\a b -> a f16.+ b) dy2 dx2_from_ds
-    let grad_in_row = dx1 ++ dx2 :> [half*2]f16
-    in (grad_ws_tok, grad_wt_tok, grad_in_row)
-  ) input grad_output
-  let gw_s_list = map (\(gw_s, _, _) -> gw_s) per_token
-  let gw_t_list = map (\(_, gw_t, _) -> gw_t) per_token
-  let g_in_rows = map (\(_, _, g_in) -> g_in) per_token
-  let gs_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gw_s_list
-  let gt_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gw_t_list
-  in (gs_total, gt_total, g_in_rows)
+        return .{
+            .allocator = allocator,
+            .api_token = token,
+            .crn = crn,
+            .http_client = .{ .allocator = allocator },
+            .owns_crn = true,
+            .backend_name = backend,
+            .owns_backend_name = true,
+        };
+    }
 
-let rsf_inverse_flow [half] (y: [half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16) : [half*2]f16 =
-  let d = half * 2
-  let y1 = y[0:half] :> [half]f16
-  let y2 = y[half:d] :> [half]f16
-  let trans = map (\j ->
-    weights_t[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_t[j][0:half] :> [half]f16) y1)
-  ) (iota half)
-  let x2 = map2 (\a b -> a f16.- b) y2 trans
-  let scale = map (\j ->
-    let raw = weights_s[j][half] f16.+ f16.sum (map2 (\w x -> w f16.* x) (weights_s[j][0:half] :> [half]f16) x2)
-    let clipped = f16.max clip_min (f16.min clip_max raw)
-    in f16.exp clipped
-  ) (iota half)
-  let x1 = map2 (\a b -> a f16./ b) y1 scale
-  in x1 ++ x2 :> [half*2]f16
+    pub fn setBackendName(self: *IBMQuantumClient, name: []const u8) !void {
+        const replacement = try self.allocator.dupe(u8, name);
 
-entry batch_rsf_inverse [batch_size][seq_len][half]
-  (outputs: [batch_size][seq_len][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16)
-  : *[batch_size][seq_len][half*2]f16 =
-  map (\sample ->
-    map (\row ->
-      rsf_inverse_flow row weights_s weights_t clip_min clip_max
-    ) sample
-  ) outputs
+        if (self.owns_backend_name) {
+            self.allocator.free(self.backend_name);
+        }
 
-entry batch_gradients_full [batch_size][seq_len][half]
-  (inputs: [batch_size][seq_len][half*2]f16)
-  (grad_outputs: [batch_size][seq_len][half*2]f16)
-  (weights_s: [half][half+1]f16) (weights_t: [half][half+1]f16)
-  (clip_min: f16) (clip_max: f16)
-  : ([half][half+1]f16, [half][half+1]f16, *[batch_size][seq_len][half*2]f16) =
-  let results = map2 (\inp g_out ->
-    rsf_backward_full inp g_out weights_s weights_t clip_min clip_max
-  ) inputs grad_outputs
-  let gs_list = map (\(gs, _, _) -> gs) results
-  let gt_list = map (\(_, gt, _) -> gt) results
-  let gin_list = map (\(_, _, gin) -> gin) results
-  let gs_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gs_list
-  let gt_total = reduce (map2 (map2 (f16.+))) (replicate half (replicate (half+1) (f16.i32 0))) gt_list
-  in (copy gs_total, copy gt_total, copy gin_list)
+        self.backend_name = replacement;
+        self.owns_backend_name = true;
+    }
 
-entry compute_initial_grad_l2 [batch_size][seq_len][d]
-  (outputs: [batch_size][seq_len][d]f16) (targets: [batch_size][seq_len][d]f16)
-  : *[batch_size][seq_len][d]f16 =
-  map2 (map2 (map2 (\o t -> (f16.f32 2.0) f16.* (o f16.- t)))) outputs targets
+    pub fn deinit(self: *IBMQuantumClient) void {
+        self.zeroSensitiveData();
+        self.allocator.free(self.api_token);
 
-entry xavier_fill_inplace [d] (_weights: *[d][d]f16) (seed: i32) : *[d][d]f16 =
-  let scale = f16.sqrt (f16.f32 2.0 f16./ f16.i64 d)
-  in map (\i ->
-    map (\j ->
-      let hash = (seed + i32.i64 i * 73856093 + i32.i64 j * 19349663) % 1000000
-      let normalized = (f16.i32 hash) f16./ (f16.i32 1000000) f16.- f16.f32 0.5
-      in normalized f16.* scale
-    ) (iota d)
-  ) (iota d)
+        if (self.owns_crn) {
+            self.allocator.free(self.crn);
+        }
 
-entry scale_weights_inplace [d] (weights: *[d][d]f16) (scale_factor: f16) : *[d][d]f16 =
-  map (map (\w -> w f16./ scale_factor)) weights
+        if (self.owns_backend_name) {
+            self.allocator.free(self.backend_name);
+        }
 
-entry accumulate_gradients [d] (grad1: *[d][d]f16) (grad2: [d][d]f16) : *[d][d]f16 =
-  map2 (map2 (f16.+)) grad1 grad2
+        self.http_client.deinit();
+        self.* = undefined;
+    }
 
-entry training_step [batch_size][seq_len][half]
-  (inputs: [batch_size][seq_len][half*2]f16)
-  (targets: [batch_size][seq_len][half*2]f16)
-  (weights_s: *[half][half+1]f16)
-  (weights_t: *[half][half+1]f16)
-  (velocity_s: *[half][half+1]f16)
-  (velocity_t: *[half][half+1]f16)
-  (learning_rate: f16)
-  (momentum: f16)
-  (clip_min: f16)
-  (clip_max: f16) : (*[half][half+1]f16, *[half][half+1]f16, *[half][half+1]f16, *[half][half+1]f16, f16) =
-  let outputs = batch_forward inputs weights_s weights_t clip_min clip_max
-  let loss = batch_compute_loss outputs targets
-  let grad_outputs = map2 (map2 (map2 (\o t -> (f16.f32 2.0) f16.* (o f16.- t)))) outputs targets
-  let (grad_s, grad_t) = batch_gradients inputs grad_outputs weights_s weights_t clip_min clip_max
-  let grad_s_c = copy grad_s
-  let grad_t_c = copy grad_t
-  let (new_weights_s, new_velocity_s) = sfd_update_mat weights_s grad_s_c learning_rate momentum velocity_s
-  let (new_weights_t, new_velocity_t) = sfd_update_mat weights_t grad_t_c learning_rate momentum velocity_t
-  in (new_weights_s, new_weights_t, new_velocity_s, new_velocity_t, loss)
+    fn escapeForJson(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+        var buffer = std.ArrayList(u8).init(allocator);
+        errdefer buffer.deinit();
 
-let oftb_scale : f16 = f16.f32 0.7071067811865476
+        for (input) |character| {
+            switch (character) {
+                '"' => try buffer.appendSlice("\\\""),
+                '\\' => try buffer.appendSlice("\\\\"),
+                '\n' => try buffer.appendSlice("\\n"),
+                '\r' => try buffer.appendSlice("\\r"),
+                '\t' => try buffer.appendSlice("\\t"),
+                '\x08' => try buffer.appendSlice("\\b"),
+                '\x0c' => try buffer.appendSlice("\\f"),
+                else => {
+                    if (character < 0x20) {
+                        var escaped: [6]u8 = undefined;
+                        const escaped_slice = try std.fmt.bufPrint(
+                            &escaped,
+                            "\\u00{x:0>2}",
+                            .{character},
+                        );
+                        try buffer.appendSlice(escaped_slice);
+                    } else {
+                        try buffer.append(character);
+                    }
+                },
+            }
+        }
 
-entry oftb_forward_single [seq_len][dim] (input: [seq_len][dim]f16) : *[seq_len][dim]f16 =
-  let half = dim / 2
-  in map (\row ->
-    let x1 = row[0:half] :> [half]f16
-    let x2 = row[half:dim] :> [half]f16
-    let new_x1 = map2 (\a b -> (a f16.- b) f16.* oftb_scale) x1 x2
-    let new_x2 = map2 (\a b -> (a f16.+ b) f16.* oftb_scale) x1 x2
-    in new_x1 ++ new_x2 :> [dim]f16
-  ) input
+        return buffer.toOwnedSlice();
+    }
 
-entry oftb_backward_single [seq_len][dim] (grad_output: [seq_len][dim]f16) : *[seq_len][dim]f16 =
-  let half = dim / 2
-  in map (\row ->
-    let g1 = row[0:half] :> [half]f16
-    let g2 = row[half:dim] :> [half]f16
-    let new_g1 = map2 (\a b -> (a f16.+ b) f16.* oftb_scale) g1 g2
-    let new_g2 = map2 (\a b -> (b f16.- a) f16.* oftb_scale) g1 g2
-    in new_g1 ++ new_g2 :> [dim]f16
-  ) grad_output
+    fn makeAuthorizationHeader(self: *const IBMQuantumClient, output: []u8) ![]const u8 {
+        return std.fmt.bufPrint(output, "Bearer {s}", .{self.api_token});
+    }
 
-entry oftb_forward [batch_size][seq_len][dim] (inputs: [batch_size][seq_len][dim]f16) : *[batch_size][seq_len][dim]f16 =
-  map (\sample -> oftb_forward_single sample) inputs
+    fn validateStatus(status: http.Status) !void {
+        const status_code = @intFromEnum(status);
 
-entry oftb_backward [batch_size][seq_len][dim] (grad_outputs: [batch_size][seq_len][dim]f16) : *[batch_size][seq_len][dim]f16 =
-  map (\sample -> oftb_backward_single sample) grad_outputs
+        if (status_code < 200 or status_code >= 300) {
+            return error.IBMQuantumRequestFailed;
+        }
+    }
 
-entry batch_oftb_forward [batch_size][seq_len][dim] (inputs: [batch_size][seq_len][dim]f16) : *[batch_size][seq_len][dim]f16 =
-  oftb_forward inputs
+    fn fetchJson(
+        self: *IBMQuantumClient,
+        method: http.Method,
+        uri: std.Uri,
+        payload: ?[]const u8,
+    ) ![]u8 {
+        var authorization_buffer: [4096]u8 = undefined;
+        const authorization = try self.makeAuthorizationHeader(&authorization_buffer);
 
-entry batch_oftb_backward [batch_size][seq_len][dim] (grad_outputs: [batch_size][seq_len][dim]f16) : *[batch_size][seq_len][dim]f16 =
-  oftb_backward grad_outputs
+        var response_body = std.ArrayList(u8).init(self.allocator);
+        errdefer response_body.deinit();
 
-entry embedding_forward [n][vocab_size][dim] (tokens: [n]i64) (weight: [vocab_size][dim]f16) : *[n][dim]f16 =
-  map (\tok ->
-    let t = if tok >= 0 && tok < vocab_size then tok else 0
-    in weight[t]
-  ) tokens
+        var redirect_buffer: [8192]u8 = undefined;
 
-entry embedding_backward [n][vocab_size][dim] (tokens: [n]i64) (grad_output: [n][dim]f16) (grad_weight: [vocab_size][dim]f16) : *[vocab_size][dim]f16 =
-  loop gw = copy grad_weight for i < n do
-    let t = if tokens[i] >= 0 && tokens[i] < vocab_size then tokens[i] else 0
-    let row_update = map2 (\g acc -> acc f16.+ g) grad_output[i] gw[t]
-    in gw with [t] = row_update
+        const result = try self.http_client.fetch(.{
+            .method = method,
+            .location = .{ .uri = uri },
+            .redirect_buffer = &redirect_buffer,
+            .response_storage = .{ .dynamic = &response_body },
+            .payload = payload,
+            .extra_headers = if (payload) |_| &.{
+                .{ .name = "authorization", .value = authorization },
+                .{ .name = "content-type", .value = "application/json" },
+                .{ .name = "accept", .value = "application/json" },
+            } else &.{
+                .{ .name = "authorization", .value = authorization },
+                .{ .name = "accept", .value = "application/json" },
+            },
+        });
 
-entry embedding_update [vocab_size][dim] (weight: *[vocab_size][dim]f16) (grad_weight: [vocab_size][dim]f16) (lr: f16) : *[vocab_size][dim]f16 =
-  map2 (map2 (\w g -> w f16.- lr f16.* g)) weight grad_weight
+        try validateStatus(result.status);
+
+        return response_body.toOwnedSlice();
+    }
+
+    pub fn submitJob(self: *IBMQuantumClient, qasm: []const u8) ![]u8 {
+        return self.submitJobWithBackend(qasm, self.backend_name, 1024);
+    }
+
+    pub fn submitJobWithBackend(self: *IBMQuantumClient, qasm: []const u8, backend: []const u8, shots: u32) ![]u8 {
+        const uri = try std.Uri.parse("https://cloud.ibm.com/quantum/api/v1/jobs");
+
+        const escaped_qasm = try escapeForJson(self.allocator, qasm);
+        defer self.allocator.free(escaped_qasm);
+
+        const escaped_backend = try escapeForJson(self.allocator, backend);
+        defer self.allocator.free(escaped_backend);
+
+        const payload = try std.fmt.allocPrint(
+            self.allocator,
+            "{{\"qasm\":\"{s}\",\"backend\":\"{s}\",\"shots\":{d}}}",
+            .{ escaped_qasm, escaped_backend, shots },
+        );
+        defer self.allocator.free(payload);
+
+        return self.fetchJson(.POST, uri, payload);
+    }
+
+    pub fn getJobResult(self: *IBMQuantumClient, job_id: []const u8) ![]u8 {
+        const escaped_job_id = try escapeForJson(self.allocator, job_id);
+        defer self.allocator.free(escaped_job_id);
+
+        const uri_string = try std.fmt.allocPrint(
+            self.allocator,
+            "https://cloud.ibm.com/quantum/api/v1/jobs/{s}",
+            .{escaped_job_id},
+        );
+        defer self.allocator.free(uri_string);
+
+        const uri = try std.Uri.parse(uri_string);
+
+        return self.fetchJson(.GET, uri, null);
+    }
+
+    pub fn zeroSensitiveData(self: *IBMQuantumClient) void {
+        if (self.api_token.len > 0) {
+            @memset(@constCast(self.api_token), 0);
+        }
+
+        if (self.crn.len > 0) {
+            @memset(@constCast(self.crn), 0);
+        }
+    }
+};
+
+pub const QuantumTaskResult = struct {
+    subgraph_id: u64,
+    success: bool,
+    quantum_states: std.ArrayList(std.math.Complex(f64)),
+    correlations: std.ArrayList(f64),
+    execution_time_ms: i64,
+    backend_name: ?[]const u8,
+    allocator: std.mem.Allocator,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, subgraph_id: u64) Self {
+        return .{
+            .subgraph_id = subgraph_id,
+            .success = false,
+            .quantum_states = std.ArrayList(std.math.Complex(f64)).init(allocator),
+            .correlations = std.ArrayList(f64).init(allocator),
+            .execution_time_ms = 0,
+            .backend_name = null,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.quantum_states.deinit();
+        self.correlations.deinit();
+
+        if (self.backend_name) |name| {
+            self.allocator.free(name);
+            self.backend_name = null;
+        }
+
+        self.* = undefined;
+    }
+
+    pub fn setBackendName(self: *Self, name: []const u8) !void {
+        const replacement = try self.allocator.dupe(u8, name);
+
+        if (self.backend_name) |existing_name| {
+            self.allocator.free(existing_name);
+        }
+
+        self.backend_name = replacement;
+    }
+};
