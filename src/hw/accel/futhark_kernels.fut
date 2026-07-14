@@ -436,8 +436,12 @@ let rgpu_compute_fractal_dimension [num_nodes][num_edges] (node_hashes: [num_nod
   if num_nodes < 2 then 1f32
   else
     let safe_src = map (\s -> if s >= 0 && s < num_nodes then s else 0i64) edge_sources
+    let safe_tgt = map (\t -> if t >= 0 && t < num_nodes then t else 0i64) edge_targets
     let src_valid = map (\s -> if s >= 0 && s < num_nodes then 1u64 else 0u64) edge_sources
-    let connectivity = reduce_by_index (replicate num_nodes 0u64) (+) 0u64 safe_src src_valid
+    let tgt_valid = map (\t -> if t >= 0 && t < num_nodes then 1u64 else 0u64) edge_targets
+    let connectivity = reduce_by_index (replicate num_nodes 0u64) (+) 0u64
+      (safe_src ++ safe_tgt)
+      (src_valid ++ tgt_valid)
     let adjusted_hashes = map2 (\h c -> h ^ (c * 2654435761u64)) node_hashes connectivity
     let box_sizes = [2i64, 4i64, 8i64, 16i64, 32i64]
     let box_counts = map (\box_size ->
